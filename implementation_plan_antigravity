@@ -1,0 +1,1040 @@
+# Implementation Plan: ClearClause (v2 — LangGraph Edition)
+
+**Tagline:** Read | Understand | Aware
+
+---
+
+## 1. Project Overview
+
+### Problem Statement
+Legal documents — leases, employment/job offers, NDAs, terms of service — are written in dense, jargon-heavy language that most people sign without fully understanding. This isn't just an education gap: legal writing measurably contains harder-to-process features (low-frequency jargon, center-embedded clauses, passive voice) than ordinary text, and most people either don't read or don't understand everyday contracts they sign. The disputes that follow later — breach, ambiguous terms, misrepresentation, failure to perform — are usually rooted in things that were missable on a first read.
+
+### Product Vision
+ClearClause is a GenAI-powered tool that helps a layperson **understand a legal document before they sign it** — through plain-language simplification, clause-level risk flagging, grounded Q&A, and side-by-side comparison of two documents — without persisting the user's documents, and without pretending to replace a lawyer.
+
+### Target Users
+An individual, non-lawyer, who has been handed a legal document (lease, job offer, NDA, ToS, freelance contract) and wants to understand what they're agreeing to before committing.
+
+### Goals (MVP)
+- Let a user upload, paste, or link a document and get a plain-language summary + clause-level breakdown
+- Flag clauses that deserve attention, with plain-language reasoning and suggested questions
+- Answer user questions strictly grounded in the uploaded document, with citations
+- Let a user compare two related documents and see what's added/removed/modified and its likely practical impact
+- Generate an exportable review checklist to bring to a real conversation (with a lawyer, landlord, employer, etc.)
+- Ship a live, publicly reachable deployment within 10 days, on free-tier infrastructure
+
+### Non-Goals
+- Not legal advice; does not predict whether a clause is "good" or "bad" in a binding sense, or tell the user whether to sign
+- Not jurisdiction-specific guidance
+- No general legal-literacy Q&A disconnected from the uploaded document
+- No 3+ document comparison
+- No user accounts/authentication
+- No OCR for scanned/image-only documents
+- No DOCX upload at MVP (deferred)
+- No persistent storage of user documents or analyses
+
+---
+
+## 2. Confirmed Requirements
+
+### Functional Requirements
+- FR1: Accept a document via file upload (PDF/TXT), pasted text, or a public URL
+- FR2: Enforce a 5MB / ~25-page limit on ingested documents
+- FR3: Optionally accept a "document context" (relationship to document, or focus area)
+- FR4: Produce a whole-document summary (type, parties if extractable, plain summary, key obligations, key dates, key financial terms)
+- FR5: Produce a clause-by-clause breakdown, each tagged with a review label, "what it says," "in plain language," "why it may matter," and "questions to consider," with a section/page reference — rendered as **Clause Cards**
+- FR6: Answer free-text questions grounded strictly in the uploaded document, with citations, and explicitly say when something isn't covered
+- FR7: Generate an exportable Review Checklist (Markdown/TXT, PDF, copy-to-clipboard)
+- FR8: Accept two documents and produce a comparison: overview, structured difference table, detailed clause-level comparison, using non-judgmental diff categories
+- FR9: Never persist raw uploaded document content beyond the active session
+
+### Non-Functional Requirements
+- NFR1: Runs entirely on free-tier infrastructure (LLM, embeddings, hosting)
+- NFR2: Deployable as a single publicly reachable URL
+- NFR3: Privacy-first: no document persistence by default, no logging of document content
+- NFR4: Graceful degradation on LLM/parsing failures (never a raw stack trace to the user)
+- NFR5: Reasonable responsiveness for a live demo (processing states must reflect real progress, not spin indefinitely with no feedback)
+- NFR6: LangGraph orchestrates all multi-agent pipelines; the graph is the single source of truth for workflow progression
+
+### Assumptions
+- OpenRouter's free-tier models remain available and usable throughout the 10-day build and judging window
+- HuggingFace sentence-transformer embedding models run within Streamlit Community Cloud's RAM limits (`all-MiniLM-L6-v2` is ~90 MB, acceptable)
+- FAISS (CPU) indexing is fast enough on session-scoped, small document sizes
+- Streamlit Community Cloud's free-tier resources are sufficient for this workload
+
+### Constraints
+- 10-day solo build timeline
+- Free-tier services only, no paid infrastructure
+- Separate `frontend/` and `backend/` directories within a single deployable Streamlit service
+
+---
+
+## 3. MVP Scope
+
+| Priority | Feature |
+|---|---|
+| **Must-have** | Document ingestion (PDF upload → page-index tree, URL scrape → FAISS, paste text → FAISS) |
+| **Must-have** | LangGraph pipeline: ingestion → clause extraction → Clause Card generation → summary |
+| **Must-have** | Clause Cards: title, plain-language meaning, priority level, questions to ask |
+| **Must-have** | Document-grounded Q&A with citations |
+| **Must-have** | Document comparison (two documents, structural diff) |
+| **Should-have** | Review Checklist generation + export |
+| **Deferred (post-MVP)** | DOCX upload support |
+| **Out of scope** | General legal Q&A beyond the document, jurisdiction-specific advice, 3+ document comparison, user accounts/auth, OCR |
+
+---
+
+## 4. Architecture Decision: LangGraph as Orchestration Layer
+
+### Why LangGraph?
+
+> [!IMPORTANT]
+> This is the core architectural change from v1. LangGraph replaces ad-hoc service-call chains with a **stateful, directed graph** that makes each processing step explicit, observable, and recoverable.
+
+**Benefits:**
+- Each node in the graph is a discrete, testable unit (ingest → index → extract_clauses → build_cards → summarize → done)
+- Graph state is typed (TypedDict/Pydantic) — the UI can subscribe to state updates and render staged progress accurately
+- Retry and conditional branching (e.g., "if PDF → use page-index path; else → use FAISS path") are first-class graph edges, not buried `if/else` blocks
+- Agents (ClauseExtractor, CardBuilder, Summarizer, QAAgent) can be composed, reordered, or swapped without touching the UI
+- Makes it straightforward to add streaming/intermediate output in the future
+
+### LangGraph Graph Design
+
+```mermaid
+flowchart TD
+    START([START]) --> InputRouter
+
+    InputRouter -->|PDF| PDFIngestNode
+    InputRouter -->|URL| URLIngestNode
+    InputRouter -->|Text| TextIngestNode
+
+    PDFIngestNode --> PDFIndexNode["PDFIndexNode (page-tree index, vectorless)"]
+    URLIngestNode --> URLEmbedNode["URLEmbedNode (scrape, chunk, FAISS + HF embed)"]
+    TextIngestNode --> TextEmbedNode["TextEmbedNode (chunk, FAISS + HF embed)"]
+
+    PDFIndexNode --> ClauseExtractAgent
+    URLEmbedNode --> ClauseExtractAgent
+    TextEmbedNode --> ClauseExtractAgent
+
+    ClauseExtractAgent --> CardBuilderAgent
+    CardBuilderAgent --> SummaryAgent
+    SummaryAgent --> END([END / Results Ready])
+
+    ClauseExtractAgent -->|Extraction failed| RetryNode
+    RetryNode --> ClauseExtractAgent
+    RetryNode -->|Max retries| DegradedClauseNode["Mark clause Unclear"]
+    DegradedClauseNode --> CardBuilderAgent
+```
+
+### Retrieval Strategy by Input Type
+
+| Input Type | Index Strategy | Embedding | RAG Type |
+|---|---|---|---|
+| **PDF** | Per-page tree index; each page is a node keyed by page number | None (vectorless) | Structured clause list passed directly as LLM context; BM25 fallback for very long docs |
+| **URL** | Scrape with `trafilatura`, chunk, FAISS `.index` in `session_state` | HuggingFace `all-MiniLM-L6-v2` (free, local) | Semantic FAISS retrieval on user question or clause-extraction query |
+| **Text (paste)** | Chunk, FAISS `.index` in `session_state` | HuggingFace `all-MiniLM-L6-v2` (free, local) | Semantic FAISS retrieval on user question or clause-extraction query |
+
+**Key design decision:** PDF gets vectorless RAG because page boundaries give us natural structure and reliable citation. URL/text get FAISS because they lack inherent structure — semantic search is needed to find relevant chunks for clause extraction and Q&A.
+
+---
+
+## 5. Final Technology Stack
+
+| Component | Choice | Rationale |
+|---|---|---|
+| Frontend | Streamlit | Fastest path to a working demo; well-suited to tab/card layouts |
+| Backend Orchestration | **LangGraph** | Stateful multi-agent pipelines; conditional routing by input type; observable step-by-step progress |
+| LLM | OpenRouter free-tier (`openrouter/free` auto-router) | User holds key; auto-router hedges against model rotation/rate-limiting |
+| Embeddings (URL/Text) | **HuggingFace `sentence-transformers` (`all-MiniLM-L6-v2`)** | Free, runs locally, no API quota; ~90 MB RAM acceptable on Streamlit Cloud |
+| Vector Store (URL/Text) | **FAISS** (CPU, session-scoped `.index`) | Fast in-process similarity search; no external dependency; index stored in `session_state` bytes and discarded on session end |
+| PDF Retrieval | **Vectorless page-tree index** | Reliable page citations; avoids unnecessary embedding step for structured PDFs |
+| Web Scraping | `trafilatura` | Clean article/text extraction from URLs; built-in encoding handling |
+| Data Validation | Pydantic v2 | All LangGraph node inputs/outputs + LLM JSON outputs validated against schemas |
+| Session Cache | Streamlit `session_state` | No cross-session state needed; no external dependency |
+| PDF Parsing | PyMuPDF (`fitz`) | Fast, reliable, page-aware |
+| Hosting | Streamlit Community Cloud | Native Streamlit, free, GitHub-integrated, public URL |
+| CI | GitHub Actions (lint + pytest) | Automatic on push; no custom CD needed |
+| Testing | pytest + unittest.mock | Unit, integration, and AI eval fixtures |
+
+**Free-tier notes:**
+- `all-MiniLM-L6-v2` downloads once on first run (~90 MB) and is cached in Streamlit Cloud's ephemeral container
+- FAISS is CPU-only (no GPU needed), fast on small document sizes
+- OpenRouter free models ~20 req/min; `openrouter/free` auto-router mitigates single-model exhaustion
+- Streamlit Community Cloud apps sleep after inactivity; warm before judging
+
+---
+
+## 6. System Architecture
+
+### Overview
+
+ClearClause is structured as a **separated-directory monolith** within one Streamlit deployment:
+- `frontend/` — all Streamlit pages and UI components
+- `backend/` — all LangGraph graphs, agents, services, integrations, and models
+
+Each directory follows a **three-layer architecture**:
+
+```
+Presentation Layer  -->  Business Logic Layer  -->  Data Access Layer
+(Streamlit pages)        (LangGraph graphs +         (integrations/:
+                          agents + services)           parsers, LLM client,
+                                                       embedding client,
+                                                       FAISS store)
+```
+
+### Full Architecture Diagram
+
+```mermaid
+flowchart TB
+    subgraph Frontend["frontend/ (Presentation Layer)"]
+        FHome[Home.py]
+        FUnderstand["pages/understand.py"]
+        FCompare["pages/compare.py"]
+        FUI["ui/ (clause_card, status, theme)"]
+    end
+
+    subgraph Backend["backend/ (Orchestration + Business + Data Access)"]
+        subgraph Graphs["graphs/ (LangGraph Pipelines)"]
+            AnalysisGraph[analysis_graph.py]
+            QAGraph[qa_graph.py]
+            ComparisonGraph[comparison_graph.py]
+        end
+
+        subgraph Agents["agents/ (LangGraph Nodes)"]
+            InputRouter[input_router.py]
+            PDFIngest[pdf_ingest_agent.py]
+            URLIngest[url_ingest_agent.py]
+            TextIngest[text_ingest_agent.py]
+            ClauseExtract[clause_extract_agent.py]
+            CardBuilder[card_builder_agent.py]
+            SummaryAgent[summary_agent.py]
+            QAAgent[qa_agent.py]
+            CompareAgent[compare_agent.py]
+        end
+
+        subgraph Services["services/ (Business Logic)"]
+            DocAnalysis[document_analysis_service.py]
+            QAService[qa_service.py]
+            CompareService[comparison_service.py]
+            ChecklistService[checklist_service.py]
+        end
+
+        subgraph Integrations["integrations/ (Data Access Layer)"]
+            DocParser[document_parser.py]
+            LLMClient[llm_client.py]
+            EmbedClient[embedding_client.py]
+            FAISSStore[faiss_store.py]
+        end
+
+        subgraph Models["models/ (Pydantic Schemas)"]
+            MDocs[document.py]
+            MClauses[clause.py]
+            MAnalysis[analysis.py]
+            MState[graph_state.py]
+            MQA[qa.py]
+            MComparison[comparison.py]
+        end
+    end
+
+    subgraph External["External Services"]
+        OR[OpenRouter API]
+        HF[HuggingFace Hub — model download]
+    end
+
+    FUnderstand --> AnalysisGraph
+    FUnderstand --> QAGraph
+    FCompare --> ComparisonGraph
+
+    AnalysisGraph --> InputRouter
+    InputRouter --> PDFIngest & URLIngest & TextIngest
+    PDFIngest & URLIngest & TextIngest --> ClauseExtract
+    ClauseExtract --> CardBuilder --> SummaryAgent
+
+    QAGraph --> QAAgent
+    ComparisonGraph --> CompareAgent
+
+    PDFIngest --> DocParser
+    URLIngest --> DocParser
+    TextIngest --> DocParser
+    URLIngest & TextIngest --> EmbedClient
+    URLIngest & TextIngest --> FAISSStore
+    ClauseExtract & CardBuilder & SummaryAgent & QAAgent & CompareAgent --> LLMClient
+
+    LLMClient --> OR
+    EmbedClient --> HF
+```
+
+---
+
+## 7. Project Directory Structure
+
+```
+clearclause/
+|
++-- frontend/                          # Presentation Layer (Streamlit)
+|   +-- Home.py                        # Streamlit entry point
+|   +-- pages/
+|   |   +-- 1_Understand_Document.py   # Single-doc analysis page
+|   |   +-- 2_Compare_Documents.py     # Two-doc comparison page
+|   +-- ui/                            # Reusable Streamlit components
+|       +-- __init__.py
+|       +-- clause_card.py             # Renders a single Clause Card
+|       +-- processing_status.py       # Staged progress display
+|       +-- theme.py                   # Color tokens, font config
+|
++-- backend/                           # Business Logic + Data Access
+|   |
+|   +-- graphs/                        # LangGraph pipeline definitions
+|   |   +-- __init__.py
+|   |   +-- analysis_graph.py          # Main doc analysis graph (PDF/URL/Text routing)
+|   |   +-- qa_graph.py                # Q&A graph (retrieval + answer)
+|   |   +-- comparison_graph.py        # Two-doc comparison graph
+|   |
+|   +-- agents/                        # LangGraph nodes / individual agents
+|   |   +-- __init__.py
+|   |   +-- input_router.py            # Routes by input type to correct ingest node
+|   |   +-- pdf_ingest_agent.py        # PDF to page-tree index (vectorless)
+|   |   +-- url_ingest_agent.py        # URL: scrape, chunk, FAISS embed
+|   |   +-- text_ingest_agent.py       # Pasted text: chunk, FAISS embed
+|   |   +-- clause_extract_agent.py    # Extracts clauses from index/store
+|   |   +-- card_builder_agent.py      # Builds Clause Cards (title, meaning, priority, questions)
+|   |   +-- summary_agent.py           # Whole-doc summary from clause list
+|   |   +-- qa_agent.py                # Grounded Q&A with citation retrieval
+|   |   +-- compare_agent.py           # Clause alignment + diff categorization
+|   |
+|   +-- services/                      # Business Logic Layer (orchestration helpers)
+|   |   +-- __init__.py
+|   |   +-- document_analysis_service.py   # High-level: run analysis_graph, return result
+|   |   +-- qa_service.py                  # High-level: run qa_graph, manage history
+|   |   +-- comparison_service.py          # High-level: run comparison_graph
+|   |   +-- checklist_service.py           # Build + export Review Checklist
+|   |
+|   +-- integrations/                  # Data Access Layer (external I/O wrappers)
+|   |   +-- __init__.py
+|   |   +-- document_parser.py         # PyMuPDF (PDF), plain read (TXT), trafilatura (URL)
+|   |   +-- llm_client.py              # OpenRouter wrapper (structured JSON output)
+|   |   +-- embedding_client.py        # HuggingFace sentence-transformers wrapper
+|   |   +-- faiss_store.py             # FAISS index builder, searcher, session-scoped store
+|   |
+|   +-- models/                        # Pydantic schemas (cross-layer contracts)
+|   |   +-- __init__.py
+|   |   +-- document.py                # ParsedDocument
+|   |   +-- clause.py                  # Clause, ClauseCard
+|   |   +-- analysis.py                # DocumentAnalysis
+|   |   +-- graph_state.py             # LangGraph TypedDict state schemas
+|   |   +-- qa.py                      # QAExchange
+|   |   +-- comparison.py              # ComparisonResult, ClausePair
+|   |
+|   +-- prompts/                       # Versioned prompt templates
+|       +-- __init__.py
+|       +-- extract_clauses.py
+|       +-- build_card.py              # NEW: Clause Card prompt
+|       +-- summarize.py
+|       +-- answer_question.py
+|       +-- compare_clauses.py
+|
++-- tests/                             # All tests
+|   +-- unit/
+|   |   +-- test_document_parser.py
+|   |   +-- test_faiss_store.py
+|   |   +-- test_embedding_client.py
+|   |   +-- test_clause_extract_agent.py
+|   |   +-- test_card_builder_agent.py
+|   |   +-- test_summary_agent.py
+|   |   +-- test_qa_agent.py
+|   |   +-- test_compare_agent.py
+|   |   +-- test_checklist_service.py
+|   |   +-- test_graph_state.py
+|   +-- integration/
+|   |   +-- test_analysis_graph_pdf.py
+|   |   +-- test_analysis_graph_url.py
+|   |   +-- test_analysis_graph_text.py
+|   |   +-- test_qa_graph.py
+|   |   +-- test_comparison_graph.py
+|   +-- fixtures/
+|       +-- sample_lease.pdf
+|       +-- sample_nda.txt
+|       +-- sample_tos_url.txt          # Recorded scraped-text fixture (avoids live fetch in CI)
+|       +-- expected_outputs/           # Expected clause extractions for regression testing
+|
++-- .streamlit/
+|   +-- config.toml                    # Theme config (deep blue/teal)
+|   +-- secrets.toml                   # Gitignored — API keys
+|
++-- .github/
+|   +-- workflows/
+|       +-- ci.yml
+|
++-- .env.example
++-- .gitignore
++-- requirements.txt
++-- README.md
+```
+
+---
+
+## 8. LangGraph State Design
+
+LangGraph requires a shared **state object** that flows through all nodes. Each node reads from and writes to this state. The state is stored in Streamlit's `session_state` between graph runs.
+
+```python
+# backend/models/graph_state.py
+
+from typing import TypedDict, Optional, Literal
+
+class AnalysisGraphState(TypedDict):
+    # Input
+    input_type: Literal["pdf", "url", "text"]
+    raw_input: bytes | str           # file bytes or text/url string
+    document_context: Optional[str]  # user-provided context (relationship, focus)
+
+    # After ingestion
+    parsed_document: Optional[dict]   # ParsedDocument serialized
+    page_index: Optional[dict]        # {page_num: page_text} — PDF only
+    faiss_index_bytes: Optional[bytes]  # serialized FAISS index — URL/text only
+    chunks: Optional[list]            # text chunks corresponding to FAISS vectors
+
+    # After clause extraction
+    raw_clauses: Optional[list]
+    extraction_attempts: int          # for retry tracking
+
+    # After card building
+    clause_cards: Optional[list]
+
+    # After summarization
+    analysis: Optional[dict]          # DocumentAnalysis serialized
+
+    # Error tracking
+    error: Optional[str]
+    degraded_clauses: list            # IDs of clauses that fell back to "Unclear"
+
+class QAGraphState(TypedDict):
+    question: str
+    analysis: dict                    # DocumentAnalysis serialized
+    faiss_index_bytes: Optional[bytes]
+    chunks: Optional[list]
+    history: list                     # list of QAExchange dicts
+    answer: Optional[dict]            # QAExchange
+
+class ComparisonGraphState(TypedDict):
+    analysis_a: dict
+    analysis_b: dict
+    focus: Optional[str]
+    aligned_pairs: Optional[list]
+    result: Optional[dict]            # ComparisonResult
+```
+
+---
+
+## 9. Clause Card Design
+
+The **Clause Card** is the primary output unit of ClearClause. Each card is generated by the `CardBuilderAgent` and rendered by `frontend/ui/clause_card.py`.
+
+### Clause Card Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `title` | `str` | Short, plain-English title for the clause (e.g., "Early Termination Fee") |
+| `plain_meaning` | `str` | What the clause actually means, in one plain sentence |
+| `priority` | `Literal["High", "Medium", "Low", "FYI"]` | How urgently the reader should engage with this clause |
+| `questions_to_ask` | `list[str]` | 2–4 concrete questions the reader should ask before signing |
+| `review_label` | `str` | One of: Review carefully / Potentially important / Standard / Beneficial / Unclear |
+| `section_reference` | `str` | Page number (PDF) or chunk index (URL/text) |
+| `original_text` | `str` | Verbatim clause text |
+
+### Priority Mapping
+
+| Priority | Meaning |
+|---|---|
+| **High** | Significant financial or legal consequence; warrants professional advice |
+| **Medium** | Affects your rights or obligations in a meaningful way |
+| **Low** | Standard clause, unlikely to cause issues, but worth knowing |
+| **FYI** | Informational; no action usually needed |
+
+### Clause Card UI Mockup
+
+```
++-----------------------------------------------------+
+|  HIGH  |  Early Termination Fee                      |
++-----------------------------------------------------+
+|  What it means:                                      |
+|  You must pay 2 months rent if you leave early.     |
++-----------------------------------------------------+
+|  Original text:  "Tenant shall pay..."  [Page 4]    |
++-----------------------------------------------------+
+|  Questions to ask:                                   |
+|  - Is there any waiver if I lose my job?            |
+|  - What counts as "written notice"?                  |
++-----------------------------------------------------+
+```
+
+---
+
+## 10. Retrieval Strategy — Detailed
+
+### PDF: Vectorless Page-Tree Index
+
+```
+PDF Upload
+   |
+   v
+PyMuPDF: extract page-by-page text
+   |
+   v
+page_index = {1: "...", 2: "...", ...}  (stored in graph state / session_state)
+   |
+   v
+ClauseExtractAgent iterates pages in order
+   |  - groups consecutive pages into "sections" by heading heuristics
+   |  - passes each section to LLM with extract_clauses prompt
+   v
+ClauseCard list  (section_reference = "Page 3-4")
+```
+
+**Why vectorless for PDF?**
+- PDFs have natural page structure → reliable, human-readable citations ("Page 3")
+- Clause extraction from structured pages is more accurate than from arbitrary semantic chunks
+- Avoids the 90 MB model download for the most common input type
+
+### URL/Text: FAISS + HuggingFace Embeddings
+
+```
+URL: trafilatura scrape, or Text paste
+   |
+   v
+Chunker (overlap-aware, ~512 token chunks)
+   |
+   v
+HuggingFace all-MiniLM-L6-v2: embed each chunk into float32 vectors
+   |
+   v
+FAISS IndexFlatL2 built in memory
+   |
+   v  (stored as bytes in session_state — no disk write needed)
+   |
+For clause extraction:
+   - Query FAISS with each "find clauses about X" query
+   - Top-K chunks passed to ClauseExtractAgent
+For Q&A:
+   - Query FAISS with user question
+   - Top-K chunks passed to QAAgent as context
+```
+
+**Session-scoped only:** The FAISS index is never written to disk. It is serialized to bytes with `faiss.serialize_index()`, stored in `session_state`, and discarded when the session ends — satisfying the no-persistence requirement.
+
+---
+
+## 11. Data Design (In-Memory, No Persistent Database)
+
+```mermaid
+classDiagram
+    class ParsedDocument {
+        +str raw_text
+        +str source_type
+        +int char_count
+        +int estimated_pages
+    }
+    class Clause {
+        +str id
+        +str section_reference
+        +str clause_text
+        +str review_label
+        +str plain_language
+        +str why_it_matters
+        +list~str~ questions_to_consider
+    }
+    class ClauseCard {
+        +str id
+        +str title
+        +str plain_meaning
+        +str priority
+        +list~str~ questions_to_ask
+        +str review_label
+        +str section_reference
+        +str original_text
+    }
+    class DocumentAnalysis {
+        +str document_type
+        +list~str~ parties
+        +str summary
+        +list~str~ key_obligations
+        +list~str~ key_dates
+        +list~str~ key_financial_terms
+        +list~ClauseCard~ clause_cards
+    }
+    class QAExchange {
+        +str question
+        +str answer
+        +list~str~ cited_clause_ids
+        +bool grounded
+    }
+    class ComparisonResult {
+        +DocumentAnalysis analysis_a
+        +DocumentAnalysis analysis_b
+        +list~ClausePair~ aligned_clauses
+    }
+    class ClausePair {
+        +ClauseCard card_a
+        +ClauseCard card_b
+        +str diff_category
+        +str explanation
+    }
+
+    DocumentAnalysis "1" --> "many" ClauseCard
+    QAExchange "many" --> "many" ClauseCard : cites
+    ComparisonResult --> DocumentAnalysis : analysis_a
+    ComparisonResult --> DocumentAnalysis : analysis_b
+    ComparisonResult --> "many" ClausePair
+    ClauseCard --> Clause : derived from
+```
+
+---
+
+## 12. Internal API / Module Contracts
+
+The LangGraph **graph runners** are the primary interface from Presentation to Backend.
+
+| Layer Boundary | Function | Input | Output | Errors |
+|---|---|---|---|---|
+| Presentation to Backend | `run_analysis_graph(...)` | `raw_input`, `input_type`, `context` | `AnalysisGraphState` (final) | `ParsingError`, `AnalysisError`, `LLMError` |
+| Presentation to Backend | `run_qa_graph(...)` | `question`, `analysis`, `faiss_index_bytes`, `chunks`, `history` | `QAExchange` | `LLMError` |
+| Presentation to Backend | `run_comparison_graph(...)` | `analysis_a`, `analysis_b`, `focus` | `ComparisonResult` | `AlignmentError`, `LLMError` |
+| Presentation to Backend | `ChecklistService.build(...)` | `DocumentAnalysis` | `ChecklistExport` | — |
+| Agent to Integration | `DocumentParser.parse(...)` | `file or text or url` | `ParsedDocument` | `UnsupportedFormatError`, `SizeLimitError`, `FetchError` |
+| Agent to Integration | `LLMClient.complete(...)` | `prompt: str`, `schema: Type[BaseModel]` | `dict` (validated) | `LLMTimeoutError`, `SchemaValidationError` |
+| Agent to Integration | `EmbeddingClient.embed(...)` | `texts: list[str]` | `ndarray` (float32 vectors) | `EmbeddingError` |
+| Agent to Integration | `FAISSStore.build(...)` | `vectors: ndarray` | `faiss.Index` | `IndexBuildError` |
+| Agent to Integration | `FAISSStore.search(...)` | `query_vector: ndarray`, `k: int` | `list[int]` (chunk indices) | — |
+
+---
+
+## 13. Core Business Logic (Detailed Per-Agent Spec)
+
+### 13.1 InputRouter (LangGraph Conditional Edge)
+
+Not a full agent — a routing function on `input_type` field:
+- `"pdf"` → routes to `PDFIngestAgent`
+- `"url"` → routes to `URLIngestAgent`
+- `"text"` → routes to `TextIngestAgent`
+
+### 13.2 PDFIngestAgent
+
+**Responsibility:** Parse PDF into a page-tree index (vectorless).
+
+1. Call `DocumentParser.parse_pdf(file_bytes)` → `ParsedDocument`
+2. Build `page_index = {page_num: page_text}` from PyMuPDF page objects
+3. Validate size limits (5 MB / ~25 pages)
+4. Write `parsed_document`, `page_index` to graph state
+
+### 13.3 URLIngestAgent
+
+**Responsibility:** Scrape URL, chunk, embed, build FAISS index.
+
+1. Call `DocumentParser.parse_url(url)` → `ParsedDocument` (SSRF-guarded: HTTPS-only, timeout, private-IP block, size cap)
+2. Chunk `raw_text` into ~512-token overlap-aware segments → `chunks: list[str]`
+3. Call `EmbeddingClient.embed(chunks)` → float32 vectors
+4. Call `FAISSStore.build(vectors)` → FAISS index
+5. Serialize index to bytes: `faiss.serialize_index(index)`
+6. Write `parsed_document`, `chunks`, `faiss_index_bytes` to graph state
+
+### 13.4 TextIngestAgent
+
+**Responsibility:** Chunk pasted text, embed, build FAISS index.
+
+Same as URLIngestAgent steps 2–6, without the URL fetch step.
+
+### 13.5 ClauseExtractAgent
+
+**Responsibility:** Extract raw clauses from the indexed document.
+
+**PDF path:**
+- Iterate `page_index`; apply heading/section heuristics to group related pages
+- Batch sections to `LLMClient.complete(extract_clauses prompt)` → raw `Clause` list
+
+**URL/Text path:**
+- For each section type (payment, termination, liability, etc.), embed a query and retrieve top-K chunks from FAISS
+- Deduplicate retrieved chunks by index
+- Pass retrieved chunks to `LLMClient.complete(extract_clauses prompt)` → raw `Clause` list
+
+**Shared:**
+- Validate each `Clause` against Pydantic model; retry once on malformed output; mark `Unclear` on second failure
+- Track `extraction_attempts` in graph state
+- On unrecoverable failure: route to `DegradedClauseNode` (adds clause as `Unclear`, continues)
+
+### 13.6 CardBuilderAgent
+
+**Responsibility:** Transform each raw `Clause` into a rich `ClauseCard`.
+
+For each `Clause`:
+1. Call `LLMClient.complete(build_card prompt)` with the clause text + plain_language + why_it_matters
+2. Prompt requests: `title`, `plain_meaning`, `priority` (High/Medium/Low/FYI), `questions_to_ask` (2–4 items)
+3. Validate against `ClauseCard` schema; on failure, use clause's existing fields as degraded fallback
+4. Assemble `clause_cards` list in graph state
+
+### 13.7 SummaryAgent
+
+**Responsibility:** Produce the whole-document `DocumentAnalysis` summary.
+
+1. Collect all `ClauseCard` objects from graph state
+2. Call `LLMClient.complete(summarize prompt)` with the full clause card list as context
+3. Extract: `document_type`, `parties`, `summary`, `key_obligations`, `key_dates`, `key_financial_terms`
+4. Assemble and write `DocumentAnalysis` to graph state
+
+### 13.8 QAAgent
+
+**Responsibility:** Answer a user question grounded in the document.
+
+**PDF source (vectorless):**
+1. If full clause card list fits in context budget, pass all cards as context
+2. Otherwise, run BM25/keyword match against clause text to select top-K cards
+3. Call `LLMClient.complete(answer_question prompt)` requiring citation of `clause_card.id`
+4. Validate `QAExchange`; check that all cited IDs exist
+
+**URL/Text source (FAISS):**
+1. Embed user question via `EmbeddingClient.embed([question])`
+2. Search `faiss_index_bytes` (deserialized) for top-K similar chunks
+3. Pass retrieved chunks + clause card context to `LLMClient.complete(answer_question prompt)`
+4. Validate `QAExchange`
+
+### 13.9 CompareAgent
+
+**Responsibility:** Align and diff two `DocumentAnalysis` objects.
+
+1. Embed all `ClauseCard.plain_meaning` strings for both analyses via `EmbeddingClient.embed`
+2. Cosine-similarity alignment: best-match pairing, threshold 0.65; unmatched → "Added"/"Removed"
+3. For each aligned pair: call `LLMClient.complete(compare_clauses prompt)` → `diff_category` + `explanation`
+4. Assemble `ComparisonResult`
+
+---
+
+## 14. UI/UX Specification
+
+### Branding
+- **Name**: ClearClause
+- **Tagline**: "Read | Understand | Aware"
+- **Visual personality**: calm and trustworthy — minimal, high-contrast, generous whitespace
+- **Color palette**: deep blue/teal primary (#1E3A5F / #0E9B8A); neutral grays for body; amber reserved exclusively for High-priority clause cards; red for error states only
+- **Typography**: Inter or system sans-serif; generous line-height for dense legal content
+
+### Pages
+
+**Home** *(placeholder text for now — readable dummy content)*
+- Hero: one-line pitch + supporting description + two CTAs (Understand a Document / Compare Documents)
+- Privacy callout: "Your documents are processed temporarily and never stored"
+- "How it works": 3 steps — Provide document → AI analyzes → Explore insights
+- Feature cards with dummy clause examples
+- Persistent disclaimer: "For informational use only — not legal advice"
+
+**Understand Document**
+- *Input*: radio for PDF / URL / Text; file uploader or text input or URL input; optional Document Context; explicit Analyze button
+- *Processing*: staged status from LangGraph state updates — "Document received" → "Building index..." → "Extracting clauses..." → "Building Clause Cards..." → "Summarizing..." → "Results ready"
+- *Results*: four tabs
+  - **Summary**: document type, parties, plain summary, obligations, dates, financial terms
+  - **Clause Cards**: grid/list of `ClauseCard` components (one per clause), color-coded by priority
+  - **Ask a Question**: document-grounded chat with citations; FAISS or vectorless path transparent to user
+  - **Review Checklist**: High/Medium-priority questions assembled, export as Markdown/TXT/PDF or copy
+
+**Compare Documents**
+- Two input panels (can each be PDF, URL, or text independently)
+- Results: Overview → Difference Table → Detailed Clause Card pairs with diff labels
+
+---
+
+## 15. AI / GenAI Design
+
+### Model Selection
+- **Completions**: OpenRouter free-tier with `openrouter/free` auto-router fallback. Exact model slugs re-verified at build time.
+- **Embeddings**: HuggingFace `all-MiniLM-L6-v2` (local, free, no API quota)
+
+### Prompt Strategy
+
+| Prompt | Purpose | Key constraints |
+|---|---|---|
+| `extract_clauses` | Extract raw clauses from text sections | Strict JSON schema; document content delimiter-wrapped; restricted `review_label` enum |
+| `build_card` | Generate Clause Card from raw clause | Requires `title`, `plain_meaning`, `priority` (enum), `questions_to_ask` (2–4 items) |
+| `summarize` | Whole-doc summary from clause card list | Produces `document_type`, `parties`, `summary`, `key_obligations`, `key_dates`, `key_financial_terms` |
+| `answer_question` | Grounded Q&A | Must cite `clause_card.id`; must use "not covered" fallback when answer absent |
+| `compare_clauses` | Diff a clause pair | `diff_category` from fixed enum; forbids "better/worse" framing |
+
+### Prompt Injection Defense
+- All document content wrapped in explicit `<document>...</document>` delimiters with system-level instructions that content is data, not instructions
+- Citation-required outputs limit how much injected content can influence results
+- No LLM output controls application flow
+
+### Context Management
+- Token budgets tracked per call
+- PDF Q&A: if clause card list exceeds context budget, BM25 fallback selects relevant subset
+- URL/Text Q&A: FAISS top-K retrieval keeps context bounded regardless of document length
+
+### Validation and Guardrails
+- All LLM outputs validated against Pydantic schemas
+- One retry on malformed output; then graceful degradation (`Unclear` label), never a hard failure
+- LangGraph conditional edges enforce that degraded clauses do not block the rest of the pipeline
+
+---
+
+## 16. Security Design
+
+| Threat | Mitigation |
+|---|---|
+| **Prompt injection** | Document content wrapped in `<document>` delimiters; system instructions declare it as untrusted data; citation-required outputs; no LLM output controls app flow |
+| **SSRF via URL input** | HTTPS-only enforcement; 10s timeout; response size cap (5 MB); block requests to private/loopback IP ranges (127.x, 10.x, 192.168.x, 169.254.x) |
+| **Malicious PDF** | PyMuPDF parsing wrapped in try/except; no JavaScript execution; no external resource loading from PDF |
+| **Oversized uploads** | 5 MB enforced client-side (Streamlit) and server-side (pre-parse check) |
+| **API key exposure** | Keys stored in Streamlit Cloud secrets manager / local `secrets.toml` (gitignored); `.env.example` has placeholder values only |
+| **Document content in logs** | Only metadata logged (size, duration, error type — never raw text or full prompts) |
+| **Rate limiting** | Per-session request counter in `session_state`; blocks excessive LLM calls during demo load |
+| **Dependency vulnerabilities** | GitHub Dependabot enabled for automatic vulnerability alerts |
+| **Transport security** | HTTPS handled by Streamlit Community Cloud automatically |
+| **Session isolation** | FAISS index and all document data stored in `session_state`; no cross-session sharing possible |
+
+---
+
+## 17. Testing Strategy
+
+### Unit Tests (`tests/unit/`)
+- `DocumentParser`: valid PDF, valid TXT, valid URL, oversized file, malformed PDF, non-HTTPS URL, private-IP URL
+- `FAISSStore`: build from vectors, search returns correct indices, serialization round-trip
+- `EmbeddingClient`: embedding output shape and dtype validation (mocked HF model)
+- `ClauseExtractAgent`: schema validation, retry-then-degrade logic
+- `CardBuilderAgent`: card field validation, priority enum enforcement
+- `SummaryAgent`: output field completeness
+- `QAAgent`: grounded answer, "not covered" fallback, citation existence check
+- `CompareAgent`: alignment logic with known cosine similarities (mocked embeddings)
+- `ChecklistService`: markdown assembly, TXT/PDF export correctness
+- `GraphState`: state schema validation (TypedDict + Pydantic)
+
+### Integration Tests (`tests/integration/`)
+- `test_analysis_graph_pdf.py`: PDF → full analysis graph with mocked LLM → valid `DocumentAnalysis`
+- `test_analysis_graph_url.py`: URL → full analysis graph with mocked scraper + mocked LLM → valid `DocumentAnalysis`
+- `test_analysis_graph_text.py`: Text → full analysis graph with mocked LLM → valid `DocumentAnalysis`
+- `test_qa_graph.py`: analysis + question → grounded answer (mocked LLM); "not covered" case
+- `test_comparison_graph.py`: two analyses → comparison result (mocked LLM + mocked embeddings)
+
+### AI Evaluation Fixtures (`tests/fixtures/`)
+- 5–10 sanitized sample documents (lease, NDA, ToS excerpt, job offer)
+- Spot-checked manually for hallucination/groundedness after any prompt change
+- Answerable + unanswerable Q&A test questions per fixture
+
+### End-to-End
+- Manual walkthrough checklist before submission (all three input types, Q&A, export, comparison)
+- Optional: single Playwright smoke test (upload fixture → assert Summary tab renders)
+
+### CI Gate
+```yaml
+# .github/workflows/ci.yml
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: pip install ruff pytest
+      - run: ruff check .
+      - run: pytest tests/unit tests/integration
+```
+
+---
+
+## 18. Deployment Architecture
+
+### Local Development
+```bash
+streamlit run frontend/Home.py
+```
+With `frontend/.streamlit/secrets.toml` (gitignored) holding `OPENROUTER_API_KEY`.
+
+### Production Environment
+Streamlit Community Cloud, connected to GitHub repository. Main file: `frontend/Home.py`.
+
+### Environment Variables
+| Variable | Purpose | Required |
+|---|---|---|
+| `OPENROUTER_API_KEY` | LLM completions via OpenRouter | Yes |
+
+*(HuggingFace embeddings run locally — no API key needed.)*
+
+### Free-Tier Limitations
+- App sleeps after inactivity; cold start ~30–60s — warm before judging
+- OpenRouter free models ~20 req/min; auto-router mitigates single-model exhaustion
+- HuggingFace model downloads once on first run (~90 MB); cached for session lifetime
+- FAISS is CPU-only; fast on small document sizes
+
+---
+
+## 19. Implementation Phases
+
+| Phase | Objective | Key Tasks | Files/Modules | Dependencies | Acceptance Criteria |
+|---|---|---|---|---|---|
+| 0 — Setup (Day 1) | Working skeleton | Repo scaffold, `requirements.txt`, Streamlit multipage skeleton with dummy text, secrets wiring, initial deploy | `frontend/Home.py`, `frontend/pages/` | None | All pages load on Streamlit Cloud without error |
+| 1 — Ingestion + FAISS (Day 1–2) | Reliable document input + index | `DocumentParser`, `EmbeddingClient`, `FAISSStore`, three ingest agents, graph state schemas | `backend/integrations/`, `backend/agents/`, `backend/models/graph_state.py` | Phase 0 | All three input types produce a valid graph state with index; unit tests pass |
+| 2 — Analysis Graph (Day 2–4) | Core LangGraph pipeline | `ClauseExtractAgent`, `CardBuilderAgent`, `SummaryAgent`, `analysis_graph.py`, prompt templates, `DocumentAnalysisService` | `backend/graphs/analysis_graph.py`, `backend/agents/`, `backend/prompts/` | Phase 1 | End-to-end: any input type → `DocumentAnalysis` with Clause Cards |
+| 3 — Clause Card UI (Day 4–5) | Clause Card display + Summary tab | `frontend/ui/clause_card.py`, Summary tab, Clause Cards tab wired to analysis graph | `frontend/` | Phase 2 | Clause Cards render correctly for all three input types |
+| 4 — Q&A Graph (Day 5–6) | Grounded Q&A | `QAAgent`, `qa_graph.py`, `QAService`, Ask a Question tab | `backend/graphs/qa_graph.py`, `backend/agents/qa_agent.py` | Phase 2 | Grounded answers with citations; "not covered" fallback works |
+| 5 — Checklist (Day 6) | Exportable output | `ChecklistService`, Review Checklist tab, Markdown/TXT/PDF/copy export | `backend/services/checklist_service.py` | Phase 2 | All export formats work; content matches on-screen |
+| 6 — Comparison Graph (Day 6–8) | Two-doc comparison | `CompareAgent`, `comparison_graph.py`, `ComparisonService`, Compare Documents page | `backend/graphs/comparison_graph.py`, `backend/agents/compare_agent.py`, `frontend/pages/2_Compare_Documents.py` | Phase 2 | Fixture comparison correctly flags introduced differences |
+| 7 — Hardening and Polish (Day 8–9) | Security, error states, UI polish | Prompt-injection delimiters, SSRF guards, rate limiting, staged loading from graph state, full error state pass, branding | Cross-cutting | Phases 1–6 | Manual error-path walkthrough passes; app looks polished |
+| 8 — Test, Deploy, Submit (Day 9–10) | Submission-ready | Full test suite green, AI eval fixture spot-check, manual E2E checklist, README finalized, final deploy | `tests/`, `README.md` | Phases 0–7 | Deployment gate passes |
+
+---
+
+## 20. Detailed Task Breakdown
+
+### Phase 0 — Setup
+- [ ] Init repo, `requirements.txt` (streamlit, pydantic, pymupdf, trafilatura, requests, langgraph, langchain-core, faiss-cpu, sentence-transformers, rank-bm25, pytest, ruff)
+- [ ] `frontend/.streamlit/config.toml` — deep blue/teal theme
+- [ ] Sidebar multipage skeleton: `frontend/Home.py` + both pages with readable dummy placeholder text
+- [ ] `backend/` directory scaffolded with `__init__.py` files
+- [ ] `.gitignore`, `.env.example`
+- [ ] Connect to Streamlit Community Cloud, confirm live deploy
+- **Definition of done**: public URL loads all pages without error; dummy text readable
+
+### Phase 1 — Ingestion + FAISS
+- [ ] `backend/models/graph_state.py` — `AnalysisGraphState`, `QAGraphState`, `ComparisonGraphState`
+- [ ] `backend/models/document.py` — `ParsedDocument`
+- [ ] `backend/integrations/document_parser.py` — `parse_pdf`, `parse_url` (SSRF-guarded), `parse_txt`, unified `parse()`
+- [ ] `backend/integrations/embedding_client.py` — HuggingFace `all-MiniLM-L6-v2` wrapper
+- [ ] `backend/integrations/faiss_store.py` — `build()`, `search()`, `serialize()`, `deserialize()`
+- [ ] `backend/agents/pdf_ingest_agent.py`
+- [ ] `backend/agents/url_ingest_agent.py`
+- [ ] `backend/agents/text_ingest_agent.py`
+- [ ] `backend/agents/input_router.py`
+- [ ] Unit tests for parser, FAISS store, embedding client
+- **Definition of done**: all three input types produce a valid graph state with index; all unit tests pass
+
+### Phase 2 — Analysis Graph
+- [ ] `backend/models/clause.py` — `Clause`, `ClauseCard`
+- [ ] `backend/models/analysis.py` — `DocumentAnalysis`
+- [ ] `backend/prompts/extract_clauses.py` — with prompt-injection delimiters
+- [ ] `backend/prompts/build_card.py` — Clause Card prompt
+- [ ] `backend/prompts/summarize.py`
+- [ ] `backend/integrations/llm_client.py` — OpenRouter wrapper, retry-once logic
+- [ ] `backend/agents/clause_extract_agent.py` — PDF path + URL/text FAISS path
+- [ ] `backend/agents/card_builder_agent.py`
+- [ ] `backend/agents/summary_agent.py`
+- [ ] `backend/graphs/analysis_graph.py` — full LangGraph StateGraph wiring
+- [ ] `backend/services/document_analysis_service.py` — `run_analysis_graph()` entry point
+- [ ] Integration tests: all three input types with mocked LLM
+- **Definition of done**: any input type produces a schema-valid `DocumentAnalysis` with Clause Cards
+
+### Phase 3 — Clause Card UI
+- [ ] `frontend/ui/clause_card.py` — priority-colored card component
+- [ ] `frontend/ui/processing_status.py` — staged status from graph state
+- [ ] `frontend/ui/theme.py` — color tokens
+- [ ] Wire Summary tab + Clause Cards tab in `frontend/pages/1_Understand_Document.py`
+- [ ] All three input type flows wired through to UI
+- **Definition of done**: Clause Cards render correctly with priority colors; staged loading visible
+
+### Phase 4 — Q&A Graph
+- [ ] `backend/models/qa.py` — `QAExchange`
+- [ ] `backend/prompts/answer_question.py` — citation-required, "not covered" fallback
+- [ ] `backend/agents/qa_agent.py` — vectorless + FAISS paths
+- [ ] `backend/graphs/qa_graph.py`
+- [ ] `backend/services/qa_service.py`
+- [ ] Ask a Question tab UI (session-scoped chat history, "Start over" action)
+- [ ] Unit + integration tests including unanswerable questions
+- **Definition of done**: grounded answers with citations; correct "not covered" decline
+
+### Phase 5 — Checklist
+- [ ] `backend/services/checklist_service.py` — Markdown assembly from High/Medium Clause Cards
+- [ ] TXT export, PDF export, copy-to-clipboard
+- [ ] Review Checklist tab
+- [ ] Unit tests for export correctness
+- **Definition of done**: all export formats work; content matches flagged cards
+
+### Phase 6 — Comparison Graph
+- [ ] `backend/models/comparison.py` — `ComparisonResult`, `ClausePair`
+- [ ] `backend/prompts/compare_clauses.py` — fixed diff-category enum, no "better/worse" framing
+- [ ] `backend/agents/compare_agent.py` — cosine-similarity alignment + diff LLM call
+- [ ] `backend/graphs/comparison_graph.py`
+- [ ] `backend/services/comparison_service.py`
+- [ ] `frontend/pages/2_Compare_Documents.py` — two-input UI, tabbed results
+- [ ] Unit tests (mocked embeddings) + integration test with fixture pair
+- **Definition of done**: fixture comparison correctly flags introduced differences
+
+### Phase 7 — Hardening and Polish
+- [ ] Prompt-injection delimiters applied consistently across all prompts
+- [ ] SSRF guard in `document_parser.parse_url`
+- [ ] Per-session rate limiter in `session_state`
+- [ ] Confirm no document text or full prompts in logs
+- [ ] Full staged-loading and error-state pass (all pages, all input types)
+- [ ] Home page copy, feature cards, privacy messaging, disclaimer
+- [ ] Branding pass: colors, typography, spacing
+- **Definition of done**: manual error-path walkthrough passes; app looks polished
+
+### Phase 8 — Test, Deploy, Submit
+- [ ] Full unit + integration suite green
+- [ ] AI-evaluation fixture set reviewed for hallucination/groundedness
+- [ ] Manual E2E checklist executed and passed
+- [ ] *(If time permits)* one automated Playwright smoke test
+- [ ] README finalized (description, setup, architecture summary, LangGraph diagram, disclaimer, live link)
+- [ ] Final deploy confirmed live and warmed before judging
+- **Definition of done**: Final Acceptance Checklist (Section 21) passes
+
+---
+
+## 21. Risks and Mitigations
+
+| Risk | Category | Mitigation |
+|---|---|---|
+| LangGraph adds complexity that slows delivery | Technical | Each graph node is isolated and testable independently; graph wiring is the last step per feature, not the first |
+| HuggingFace model download fails on Streamlit Cloud | Technical | Cache model to `~/.cache/huggingface` on first run; Streamlit Cloud supports this in ephemeral containers |
+| FAISS session-state bytes exceed Streamlit Cloud memory | Technical | Only URL/text use FAISS; for typical document sizes, FAISS index for ~512-token chunks is small (~few MB) |
+| Free OpenRouter model rotated or rate-limited | Technical | `openrouter/free` auto-router fallback; test against multiple models early |
+| LLM returns malformed JSON | Technical | Schema validation + one retry + graceful `Unclear` degradation; LangGraph conditional edge to degraded node |
+| Comparison of structurally different documents produces poor alignment | Product | Semantic cosine alignment (not positional); "Requires review" catch-all category |
+| Scope creep toward legal outcome prediction | Product | Explicit non-goal; enforced at prompt level |
+| Prompt injection via document content | Security | Delimiter-based isolation; citation-required outputs; no LLM control over app flow |
+| SSRF via URL input | Security | HTTPS-only, private-IP blocking, timeout, size cap |
+| Sensitive content in logs | Security | Metadata-only logging |
+| Timeline slips on comparison feature | Timeline | Scheduled after core single-doc feature works; partial cut still leaves a demo-able product |
+
+---
+
+## 22. Future Improvements
+
+- DOCX upload support
+- OCR for scanned/image-only documents
+- Streaming Clause Card generation (LangGraph streaming API)
+- React frontend consuming a FastAPI backend (LangGraph Server)
+- Jurisdiction-aware guidance
+- Multi-document (3+) comparison
+- Explicit opt-in session history
+- Automated E2E test suite
+
+---
+
+## 23. Final Acceptance Checklist
+
+**Functional**
+- [ ] PDF upload → Clause Cards + Summary rendered correctly
+- [ ] URL input → Clause Cards + Summary rendered correctly
+- [ ] Text paste → Clause Cards + Summary rendered correctly
+- [ ] Q&A answers grounded questions with citations; correctly declines unanswerable ones
+- [ ] Review Checklist exports correctly in all three formats
+- [ ] Comparison correctly categorizes differences between two related documents
+
+**Testing**
+- [ ] Unit tests green
+- [ ] Integration tests green
+- [ ] AI-evaluation fixture review shows no obvious hallucination
+- [ ] Manual E2E checklist passed
+- [ ] *(Optional)* automated E2E smoke test passing
+
+**Security**
+- [ ] Secrets not committed to the repo
+- [ ] Prompt-injection delimiters in all prompts
+- [ ] SSRF guards in URL parsing
+- [ ] No document content or full prompts in logs
+- [ ] Rate limiting active
+- [ ] FAISS index never written to disk
+
+**Deployment**
+- [ ] Live public URL confirmed working
+- [ ] App warmed before judging session
+- [ ] README with live link, architecture summary, and disclaimer published

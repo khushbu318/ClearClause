@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+my_venv/
+
+# Secrets — NEVER commit these
+frontend/.streamlit/secrets.toml
+.env
+*.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# HuggingFace model cache (large; re-downloaded on first run)
+# Do NOT gitignore ~/.cache/huggingface — Streamlit Cloud caches it per container
+# But ignore any local copies accidentally placed in the repo
+models/
+*.bin
+*.safetensors
+
+# OS
+.DS_Store
+Thumbs.db
+
+# FAISS index files — never persisted, but guard against accidents
+*.index
+*.faiss

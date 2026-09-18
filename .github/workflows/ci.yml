@@ -1,0 +1,35 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install dev tools
+        run: pip install ruff pytest pytest-mock
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Unit tests
+        run: pytest tests/unit -v
+
+      - name: Integration tests
+        run: pytest tests/integration -v
+        # Integration tests use mocked LLM/embeddings — no API keys needed

@@ -1,0 +1,30 @@
+# Core
+streamlit>=1.35.0
+pydantic>=2.7.0
+
+# Document parsing
+pymupdf>=1.24.0
+trafilatura>=1.9.0
+
+# LangGraph / LangChain
+langgraph>=0.2.0
+langchain-core>=0.2.0
+
+# Embeddings + Vector search
+sentence-transformers>=3.0.0
+faiss-cpu>=1.8.0
+numpy>=1.26.0
+
+# BM25 fallback
+rank-bm25>=0.2.2
+
+# HTTP
+requests>=2.32.0
+
+# PDF export for checklist
+reportlab>=4.0.0
+
+# Dev / CI
+pytest>=8.2.0
+pytest-mock>=3.14.0
+ruff>=0.4.0
