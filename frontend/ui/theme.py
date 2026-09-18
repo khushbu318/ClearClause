@@ -1,79 +1,84 @@
-# Colors
-PRIMARY = "#0E9B8A"          # teal — brand primary
-SECONDARY = "#1E3A5F"        # deep blue — brand secondary
-ACCENT_HIGH = "#F59E0B"      # amber — High priority clause cards ONLY
-ACCENT_ERROR = "#EF4444"     # red — error states ONLY
-BG_MAIN = "#0F1923"          # main background
-BG_CARD = "#1A2838"          # card / secondary background
-TEXT_PRIMARY = "#E8EDF2"     # primary text
-TEXT_MUTED = "#8B9CB3"       # muted / secondary text
-BORDER = "#2A3F55"           # card borders
+"""Theme constants, color tokens, and custom CSS styling for ClearClause UI."""
 
-# Priority → color mapping
+import streamlit as st
+
+PRIMARY_COLOR = "#1E3A5F"      # Deep Navy Blue
+ACCENT_COLOR = "#0E9B8A"       # Teal Accent
+BG_LIGHT = "#F8FAFC"           # Off-white / light slate background
+
 PRIORITY_COLORS = {
-    "High": "#F59E0B",    # amber
-    "Medium": "#3B82F6",  # blue
-    "Low": "#6B7280",     # gray
-    "FYI": "#10B981",     # green
+    "High": {"text": "#92400E", "bg": "#FEF3C7", "border": "#F59E0B", "badge": "#D97706"},
+    "Medium": {"text": "#1E40AF", "bg": "#EFF6FF", "border": "#60A5FA", "badge": "#2563EB"},
+    "Low": {"text": "#374151", "bg": "#F3F4F6", "border": "#9CA3AF", "badge": "#4B5563"},
+    "FYI": {"text": "#065F46", "bg": "#ECFDF5", "border": "#34D399", "badge": "#059669"},
 }
 
-# Review label → badge color
 LABEL_COLORS = {
-    "Review carefully": "#EF4444",
-    "Potentially important": "#F59E0B",
-    "Standard": "#6B7280",
-    "Beneficial": "#10B981",
-    "Unclear": "#8B5CF6",
+    "Review carefully": "#D97706",
+    "Potentially important": "#2563EB",
+    "Standard": "#4B5563",
+    "Beneficial": "#059669",
+    "Unclear": "#DC2626",
 }
 
-# Streamlit custom CSS injected on every page load
 GLOBAL_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'Inter', sans-serif;
+.stApp {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
 }
-
-/* Hide Streamlit default menu and footer in prod */
-#MainMenu { visibility: hidden; }
-footer { visibility: hidden; }
-
-/* Card base */
-.cc-card {
-    background: #1A2838;
-    border: 1px solid #2A3F55;
-    border-radius: 12px;
-    padding: 1.25rem 1.5rem;
-    margin-bottom: 1rem;
-    transition: box-shadow 0.2s ease;
+.clause-card {
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+    background-color: #ffffff;
+    border-left: 6px solid #1E3A5F;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+    transition: transform 0.15s ease-in-out;
 }
-.cc-card:hover {
-    box-shadow: 0 4px 20px rgba(14, 155, 138, 0.15);
+.clause-card-high {
+    border-left-color: #D97706 !important;
+    background-color: #FFFBEB;
 }
-
-/* Priority badge */
-.cc-badge {
+.clause-card-medium {
+    border-left-color: #2563EB !important;
+    background-color: #F0F9FF;
+}
+.clause-card-low {
+    border-left-color: #6B7280 !important;
+    background-color: #F9FAFB;
+}
+.clause-card-fyi {
+    border-left-color: #059669 !important;
+    background-color: #ECFDF5;
+}
+.priority-badge {
     display: inline-block;
-    padding: 0.2rem 0.65rem;
-    border-radius: 999px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.05em;
+    padding: 4px 12px;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 700;
     text-transform: uppercase;
-    margin-bottom: 0.5rem;
+    letter-spacing: 0.05em;
+    color: #ffffff;
 }
+.badge-high { background-color: #D97706; }
+.badge-medium { background-color: #2563EB; }
+.badge-low { background-color: #4B5563; }
+.badge-fyi { background-color: #059669; }
 
-/* Section divider */
-.cc-divider {
-    border: none;
-    border-top: 1px solid #2A3F55;
-    margin: 0.75rem 0;
+.disclaimer-banner {
+    background-color: #F1F5F9;
+    border: 1px solid #CBD5E1;
+    color: #475569;
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    margin-bottom: 20px;
 }
-
-/* Step status */
-.cc-step-done { color: #10B981; }
-.cc-step-active { color: #0E9B8A; font-weight: 600; }
-.cc-step-pending { color: #8B9CB3; }
 </style>
 """
+
+
+def apply_custom_css():
+    """Inject custom styling for cards, typography, and crisp layout."""
+    st.markdown(GLOBAL_CSS, unsafe_allow_html=True)

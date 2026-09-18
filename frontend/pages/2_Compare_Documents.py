@@ -4,12 +4,14 @@ Two-document comparison page — Phase 0 placeholder with full readable dummy UI
 Real LangGraph comparison pipeline will be wired in Phase 6.
 """
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import streamlit as st
-from frontend.ui.theme import GLOBAL_CSS, PRIORITY_COLORS
+
+from frontend.ui.theme import GLOBAL_CSS
 
 st.set_page_config(
     page_title="Compare Documents — ClearClause",
@@ -103,7 +105,7 @@ has_b = bool(file_b or (url_b and url_b.strip()) or (text_b and text_b.strip()))
 compare_btn = st.button(
     "🔍 Compare Documents",
     type="primary",
-    use_container_width=True,
+    width="stretch",
     disabled=not (has_a and has_b),
     key="compare_btn",
 )

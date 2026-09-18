@@ -1,18 +1,16 @@
 """
 backend/agents/pdf_ingest_agent.py
 LangGraph node — ingests a PDF and builds a vectorless page-tree index.
-
-Writes to state:
-    parsed_document  — ParsedDocument.model_dump()
-    page_index       — {page_num: page_text}
-    error            — set on failure
 """
 
-from backend.models.graph_state import AnalysisGraphState
 from backend.integrations.document_parser import (
-    parse_pdf,
     DocumentParserError,
+    parse_pdf,
 )
+from backend.models.graph_state import AnalysisGraphState
+from backend.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def pdf_ingest_agent(state: AnalysisGraphState) -> dict:
@@ -20,17 +18,23 @@ def pdf_ingest_agent(state: AnalysisGraphState) -> dict:
     raw_input = state.get("raw_input")
     filename = "uploaded.pdf"
 
-    # Try to extract a filename if the caller passed metadata
+    logger.info("Executing PDF ingest node...")
     if isinstance(raw_input, bytes):
         file_bytes = raw_input
     else:
+        logger.error("PDF ingest node received non-bytes input")
         return {"error": "PDF ingest received non-bytes input."}
 
     try:
         parsed_doc, page_index = parse_pdf(file_bytes, filename=filename)
+        logger.info(
+            f"PDF ingest node completed successfully [pages={len(page_index)}, char_count={parsed_doc.char_count}]"
+        )
     except DocumentParserError as exc:
+        logger.warning(f"PDF ingest failed with parser error: {exc}")
         return {"error": str(exc)}
     except Exception as exc:
+        logger.error(f"Unexpected error during PDF ingestion: {exc}")
         return {"error": f"Unexpected error during PDF parsing: {exc}"}
 
     return {

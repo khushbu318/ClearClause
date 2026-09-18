@@ -1,15 +1,19 @@
 """
 frontend/pages/1_Understand_Document.py
-Single-document analysis page — Phase 0 placeholder with full readable dummy UI.
-Real LangGraph pipeline will be wired in Phase 2–4.
+Single-document analysis page — Integrated with LangGraph Backend.
 """
 
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import streamlit as st
-from frontend.ui.theme import GLOBAL_CSS, PRIORITY_COLORS, LABEL_COLORS
+
+from backend.services.document_analysis_service import analyze_document
+from frontend.ui.clause_card import render_clause_card
+from frontend.ui.processing_status import render_processing_status
+from frontend.ui.theme import apply_custom_css
 
 st.set_page_config(
     page_title="Understand a Document — ClearClause",
@@ -17,7 +21,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
+apply_custom_css()
 
 
 # ── Page header ───────────────────────────────────────────────────────────────
@@ -27,6 +31,17 @@ st.markdown(
     <p style="color:#8B9CB3; font-size:1rem; margin-bottom:1.5rem;">
         Upload a PDF, paste text, or enter a URL — ClearClause will break it down clause by clause.
     </p>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Disclaimer banner
+st.markdown(
+    """
+    <div class="disclaimer-banner">
+        🛡️ <b>Privacy-First & Informational Only:</b> Your documents are processed temporarily in memory and never persisted.
+        ClearClause provides plain-language explanations, not legal advice.
+    </div>
     """,
     unsafe_allow_html=True,
 )
@@ -44,8 +59,10 @@ input_type = st.radio(
 uploaded_file = None
 url_input = ""
 text_input = ""
+backend_input_type = "pdf"
 
 if input_type == "📄 PDF Upload":
+    backend_input_type = "pdf"
     uploaded_file = st.file_uploader(
         "Upload a PDF (max 5 MB, ~25 pages)",
         type=["pdf"],
@@ -57,6 +74,7 @@ if input_type == "📄 PDF Upload":
         st.caption(f"📎 {uploaded_file.name} — {size_mb:.2f} MB")
 
 elif input_type == "🌐 URL":
+    backend_input_type = "url"
     url_input = st.text_input(
         "Paste a public document URL (https:// only)",
         placeholder="https://example.com/terms-of-service",
@@ -65,6 +83,7 @@ elif input_type == "🌐 URL":
     st.caption("We'll fetch and extract the text. Private or login-gated pages are not supported.")
 
 elif input_type == "📝 Paste Text":
+    backend_input_type = "text"
     text_input = st.text_area(
         "Paste your document text here",
         placeholder="Paste the full text of your lease, NDA, job offer, or terms of service...",
@@ -92,12 +111,16 @@ context_choice = st.selectbox(
     options=context_options,
     key="context_choice",
 )
+
+document_context = context_choice
 if context_choice == "Other — I'll describe below":
     custom_context = st.text_input(
         "Describe your context",
         placeholder="e.g. I'm a freelancer reviewing a client services agreement",
         key="custom_context",
     )
+    if custom_context:
+        document_context = custom_context
 
 st.divider()
 
@@ -106,7 +129,7 @@ has_input = bool(uploaded_file or url_input.strip() or text_input.strip())
 analyze_btn = st.button(
     "⚡ Analyze Document",
     type="primary",
-    use_container_width=True,
+    width="stretch",
     disabled=not has_input,
     key="analyze_btn",
 )
@@ -114,310 +137,211 @@ analyze_btn = st.button(
 if not has_input:
     st.caption("Provide a document above to enable analysis.")
 
-# ── Processing state (dummy staged steps for Phase 0) ─────────────────────────
+# ── Execute Analysis Pipeline ──────────────────────────────────────────────────
 if analyze_btn and has_input:
-    st.divider()
-    st.markdown("### Processing…")
-    steps = [
-        ("Document received", True, True),
-        ("Building index…", True, False),
-        ("Extracting clauses…", False, False),
-        ("Building Clause Cards…", False, False),
-        ("Summarizing…", False, False),
-        ("Results ready", False, False),
-    ]
-    for label, done, active in steps:
-        if done:
-            cls = "cc-step-done"
-            icon = "✅"
-        elif active:
-            cls = "cc-step-active"
-            icon = "⏳"
+    with st.spinner("Processing document through LangGraph pipeline..."):
+        render_processing_status(2)
+
+        raw_input_data = None
+        if backend_input_type == "pdf":
+            raw_input_data = uploaded_file.read()
+        elif backend_input_type == "url":
+            raw_input_data = url_input.strip()
         else:
-            cls = "cc-step-pending"
-            icon = "○"
-        st.markdown(
-            f"<p class='{cls}' style='margin:0.2rem 0;'>{icon} {label}</p>",
-            unsafe_allow_html=True,
+            raw_input_data = text_input.strip()
+
+        # Run backend LangGraph pipeline
+        result_state = analyze_document(
+            raw_input=raw_input_data,
+            input_type=backend_input_type,
+            document_context=document_context,
         )
-    st.info(
-        "⚙️ **Phase 0 placeholder** — The LangGraph analysis pipeline will be wired here in Phase 2. "
-        "The staged steps above reflect the real processing states from the graph.",
-        icon=None,
-    )
+
+        st.session_state["analysis_result"] = result_state
+
+        if result_state.get("error"):
+            st.error(f"❌ Analysis failed: {result_state['error']}")
+        else:
+            st.success("✅ Analysis completed successfully!")
 
 st.divider()
 
-# ── Results area (dummy) ──────────────────────────────────────────────────────
-st.markdown("### Results")
-st.caption("Results will appear here after analysis. Showing example output for layout reference.")
+# ── Results Display ────────────────────────────────────────────────────────────
+st.markdown("### Analysis Results")
 
-tab_summary, tab_cards, tab_qa, tab_checklist = st.tabs(
-    ["📋 Summary", "🃏 Clause Cards", "💬 Ask a Question", "📝 Review Checklist"]
-)
+analysis_state = st.session_state.get("analysis_result")
 
-# ── Tab: Summary ──────────────────────────────────────────────────────────────
-with tab_summary:
-    st.markdown("#### Document Summary")
-    st.markdown(
-        """
-        <div class="cc-card">
-            <p style="color:#8B9CB3; font-size:0.85rem; margin-bottom:0.4rem;">DOCUMENT TYPE</p>
-            <p style="color:#E8EDF2; font-size:1rem; font-weight:500; margin-bottom:1rem;">Residential Lease Agreement</p>
-            <p style="color:#8B9CB3; font-size:0.85rem; margin-bottom:0.4rem;">PARTIES</p>
-            <p style="color:#E8EDF2; font-size:0.95rem; margin-bottom:1rem;">
-                Landlord: Acme Property Management LLC &nbsp;·&nbsp; Tenant: [You]
-            </p>
-            <p style="color:#8B9CB3; font-size:0.85rem; margin-bottom:0.4rem;">PLAIN SUMMARY</p>
-            <p style="color:#B0BEC5; font-size:0.95rem; margin-bottom:0;">
-                This is a 12-month residential lease for an apartment at 123 Main Street.
-                Rent is $1,800/month due on the 1st, with a 5-day grace period.
-                You are responsible for utilities except water. Pets are allowed with a deposit.
-                Breaking the lease early costs two months' rent. The lease auto-renews unless
-                you give 60 days' notice.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+if not analysis_state:
+    st.info("👆 Provide a document and click **⚡ Analyze Document** to see insights here.")
+else:
+    error_msg = analysis_state.get("error")
+    if error_msg:
+        st.error(f"Analysis error: {error_msg}")
+
+    analysis_data = analysis_state.get("analysis") or {}
+    clause_cards = analysis_state.get("clause_cards") or []
+
+    tab_summary, tab_cards, tab_qa, tab_checklist = st.tabs(
+        ["📋 Summary", f"🃏 Clause Cards ({len(clause_cards)})", "💬 Ask a Question", "📝 Review Checklist"]
     )
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("**Key Obligations**")
-        for item in [
-            "Pay $1,800 rent by the 1st of each month",
-            "Give 60 days' notice before move-out",
-            "Maintain apartment in good condition",
-            "No subletting without written consent",
-        ]:
-            st.markdown(f"- {item}")
+    # ── Tab: Whole Document Summary ───────────────────────────────────────────
+    with tab_summary:
+        st.markdown("#### Whole-Document Summary")
 
-    with col_b:
-        st.markdown("**Key Dates & Financial Terms**")
-        for item in [
-            "Lease start: 1 Jan 2025",
-            "Lease end: 31 Dec 2025",
-            "Security deposit: $3,600 (2 months)",
-            "Early termination fee: $3,600 (2 months)",
-            "Pet deposit: $300 (refundable)",
-        ]:
-            st.markdown(f"- {item}")
+        doc_type = analysis_data.get("document_type", "Legal Agreement")
+        parties = analysis_data.get("parties", [])
+        summary_text = analysis_data.get("summary", "No summary available.")
+        obligations = analysis_data.get("key_obligations", [])
+        dates = analysis_data.get("key_dates", [])
+        financial_terms = analysis_data.get("key_financial_terms", [])
 
-# ── Tab: Clause Cards ─────────────────────────────────────────────────────────
-with tab_cards:
-    st.markdown("#### Clause Cards")
-    st.caption("Each clause from the document, simplified and prioritized.")
-
-    dummy_cards = [
-        {
-            "priority": "High",
-            "review_label": "Review carefully",
-            "title": "Early Termination Fee",
-            "plain_meaning": "If you leave before the lease ends, you owe two months' rent — regardless of the reason.",
-            "original_text": "Tenant shall pay a termination fee equal to two (2) months' Base Rent if Tenant vacates the Premises prior to the expiration of the Lease Term.",
-            "section": "Page 4, §7.2",
-            "questions": [
-                "Is there a waiver clause for job loss or medical emergency?",
-                "What counts as 'written notice' — email or certified mail?",
-                "Can I sublet instead of paying the fee?",
-            ],
-        },
-        {
-            "priority": "Medium",
-            "review_label": "Potentially important",
-            "title": "Automatic Renewal",
-            "plain_meaning": "Your lease renews for another 12 months automatically unless you notify the landlord 60 days before it ends.",
-            "original_text": "Unless Tenant provides written notice of non-renewal no less than sixty (60) days prior to expiration, this Lease shall automatically renew for a period of twelve (12) months.",
-            "section": "Page 2, §3.1",
-            "questions": [
-                "How do I send written notice — email or physical letter?",
-                "Can I opt for month-to-month instead of a full renewal?",
-            ],
-        },
-        {
-            "priority": "Low",
-            "review_label": "Standard",
-            "title": "Landlord Entry Rights",
-            "plain_meaning": "The landlord can enter your apartment with 24 hours' notice for inspections, repairs, or showings.",
-            "original_text": "Landlord may enter the Premises upon twenty-four (24) hours' written notice for inspection, repair, or showing purposes.",
-            "section": "Page 5, §9.1",
-            "questions": [
-                "Can I refuse entry if the timing is inconvenient?",
-            ],
-        },
-        {
-            "priority": "FYI",
-            "review_label": "Beneficial",
-            "title": "Pet Policy",
-            "plain_meaning": "Pets are allowed with a refundable $300 deposit, returned if there is no pet-related damage at move-out.",
-            "original_text": "Tenant may keep domestic pets upon payment of a refundable pet deposit of $300.00, subject to inspection at lease termination.",
-            "section": "Page 6, §11.4",
-            "questions": [
-                "What counts as 'pet damage' vs. normal wear and tear?",
-            ],
-        },
-    ]
-
-    for card in dummy_cards:
-        priority = card["priority"]
-        label = card["review_label"]
-        p_color = PRIORITY_COLORS.get(priority, "#6B7280")
-        l_color = LABEL_COLORS.get(label, "#6B7280")
-        questions_html = "".join(
-            f"<li style='color:#8B9CB3; font-size:0.88rem; margin-bottom:0.3rem;'>{q}</li>"
-            for q in card["questions"]
-        )
-        with st.expander(f"{card['title']} — {priority} priority", expanded=(priority == "High")):
-            st.markdown(
-                f"""
-                <div style="margin-bottom:0.75rem;">
-                    <span class="cc-badge" style="background:{p_color}22; color:{p_color}; border:1px solid {p_color}44; margin-right:0.5rem;">
-                        {priority}
-                    </span>
-                    <span class="cc-badge" style="background:{l_color}22; color:{l_color}; border:1px solid {l_color}44;">
-                        {label}
-                    </span>
-                </div>
-                <p style="color:#B0BEC5; font-size:1rem; margin-bottom:0.75rem;">{card['plain_meaning']}</p>
-                <hr class="cc-divider">
-                <p style="color:#8B9CB3; font-size:0.82rem; margin-bottom:0.4rem;">
-                    📍 {card['section']}
-                </p>
-                <p style="color:#6B7280; font-size:0.85rem; font-style:italic; margin-bottom:0.75rem;">
-                    "{card['original_text']}"
-                </p>
-                <hr class="cc-divider">
-                <p style="color:#E8EDF2; font-size:0.88rem; font-weight:600; margin-bottom:0.4rem;">
-                    Questions to ask:
-                </p>
-                <ul style="padding-left:1.2rem; margin:0;">{questions_html}</ul>
-                """,
-                unsafe_allow_html=True,
-            )
-
-# ── Tab: Ask a Question ───────────────────────────────────────────────────────
-with tab_qa:
-    st.markdown("#### Ask a Question About This Document")
-    st.caption("Questions are answered strictly from the document. You'll see citations for every answer.")
-
-    if "qa_history" not in st.session_state:
-        st.session_state.qa_history = []
-
-    question = st.chat_input("Ask something about the document…", key="qa_input")
-
-    # Show example exchange
-    if not st.session_state.qa_history:
         st.markdown(
-            """
-            <div class="cc-card" style="opacity:0.7;">
-                <p style="color:#8B9CB3; font-size:0.85rem; margin-bottom:0.3rem;">Example question</p>
-                <p style="color:#E8EDF2; font-size:0.95rem; margin-bottom:0.75rem;">
-                    "What happens if I need to break the lease early?"
-                </p>
-                <p style="color:#8B9CB3; font-size:0.85rem; margin-bottom:0.3rem;">Example answer</p>
-                <p style="color:#B0BEC5; font-size:0.9rem; margin-bottom:0.5rem;">
-                    According to §7.2 (Page 4), if you vacate before the lease ends you owe a
-                    termination fee equal to two months' rent ($3,600). There is no waiver
-                    clause for circumstances like job loss.
-                </p>
-                <p style="color:#0E9B8A; font-size:0.8rem;">📎 Cited: Clause §7.2 — Early Termination Fee</p>
+            f"""
+            <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
+                <p style="color: #64748B; font-size: 0.8rem; font-weight: 700; margin-bottom: 4px; text-transform: uppercase;">DOCUMENT TYPE</p>
+                <p style="color: #0F172A; font-size: 1.1rem; font-weight: 600; margin-bottom: 14px;">{doc_type}</p>
+                <p style="color: #64748B; font-size: 0.8rem; font-weight: 700; margin-bottom: 4px; text-transform: uppercase;">PARTIES INVOLVED</p>
+                <p style="color: #334155; font-size: 0.95rem; margin-bottom: 14px;">{', '.join(parties) if parties else 'Not explicitly specified'}</p>
+                <p style="color: #64748B; font-size: 0.8rem; font-weight: 700; margin-bottom: 4px; text-transform: uppercase;">PLAIN SUMMARY</p>
+                <p style="color: #334155; font-size: 0.95rem; line-height: 1.6; margin: 0;">{summary_text}</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    if question:
-        st.session_state.qa_history.append({"role": "user", "content": question})
-        st.session_state.qa_history.append({
-            "role": "assistant",
-            "content": "⚙️ Q&A pipeline not yet wired (Phase 4). Your question was received: *" + question + "*",
-            "citation": "—",
-        })
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("##### 📌 Key Obligations")
+            if obligations:
+                for item in obligations:
+                    st.markdown(f"- {item}")
+            else:
+                st.caption("No specific key obligations flagged.")
 
-    for msg in st.session_state.qa_history:
-        if msg["role"] == "user":
-            with st.chat_message("user"):
-                st.markdown(msg["content"])
+        with col_b:
+            st.markdown("##### 📅 Key Dates & 💰 Financial Terms")
+            if dates:
+                st.markdown("**Dates & Deadlines:**")
+                for item in dates:
+                    st.markdown(f"- 📅 {item}")
+            if financial_terms:
+                st.markdown("**Financial Terms:**")
+                for item in financial_terms:
+                    st.markdown(f"- 💰 {item}")
+            if not dates and not financial_terms:
+                st.caption("No specific dates or financial terms flagged.")
+
+    # ── Tab: Clause Cards ─────────────────────────────────────────────────────
+    with tab_cards:
+        st.markdown("#### Clause-by-Clause Breakdown")
+        st.caption("Each extracted clause simplified into a priority-coded Clause Card.")
+
+        if not clause_cards:
+            st.warning("No clauses extracted from this document.")
         else:
-            with st.chat_message("assistant"):
-                st.markdown(msg["content"])
-                if msg.get("citation") and msg["citation"] != "—":
-                    st.caption(f"📎 {msg['citation']}")
+            priority_filter = st.multiselect(
+                "Filter by priority level:",
+                options=["High", "Medium", "Low", "FYI"],
+                default=["High", "Medium", "Low", "FYI"],
+                key="clause_priority_filter",
+            )
 
-    if st.session_state.qa_history:
-        if st.button("🔄 Clear conversation", key="clear_qa"):
+            filtered_cards = [c for c in clause_cards if c.get("priority") in priority_filter]
+
+            st.caption(f"Showing {len(filtered_cards)} of {len(clause_cards)} clause cards.")
+
+            for card in filtered_cards:
+                render_clause_card(card)
+
+    # ── Tab: Ask a Question ───────────────────────────────────────────────────
+    with tab_qa:
+        st.markdown("#### Ask a Question Grounded in This Document")
+        st.caption("Questions are answered strictly from the document with citations.")
+
+        if "qa_history" not in st.session_state:
             st.session_state.qa_history = []
-            st.rerun()
 
-    st.divider()
-    st.caption(
-        "⚠️ Answers are grounded strictly in the uploaded document. "
-        "ClearClause will say 'not covered in this document' if your question isn't addressed. "
-        "This is not legal advice."
-    )
+        question = st.chat_input("Ask a question about your uploaded document...", key="qa_input")
 
-# ── Tab: Review Checklist ─────────────────────────────────────────────────────
-with tab_checklist:
-    st.markdown("#### Review Checklist")
-    st.caption("A curated list of open questions from High and Medium priority clauses — ready to bring to a lawyer, landlord, or HR.")
+        if question:
+            st.session_state.qa_history.append({"role": "user", "content": question})
+            with st.spinner("Searching document context for answer..."):
+                from backend.agents.qa_agent import answer_document_question
+                qa_res = answer_document_question(question, analysis_state)
 
-    checklist_md = """
-## ClearClause Review Checklist
-*Generated from: Sample Rental Agreement · 16 Sep 2025*
+            st.session_state.qa_history.append({
+                "role": "assistant",
+                "content": qa_res.get("answer", ""),
+                "citation": qa_res.get("citation", ""),
+            })
 
-### Document Summary
-12-month residential lease at $1,800/month. Key risks: early termination fee (2 months), automatic 12-month renewal, no subletting without consent.
+        for msg in st.session_state.qa_history:
+            if msg["role"] == "user":
+                with st.chat_message("user"):
+                    st.markdown(msg["content"])
+            else:
+                with st.chat_message("assistant"):
+                    st.markdown(msg["content"])
+                    if msg.get("citation"):
+                        st.caption(f"📎 {msg['citation']}")
 
----
+        if st.session_state.qa_history:
+            if st.button("🔄 Clear conversation", key="clear_qa"):
+                st.session_state.qa_history = []
+                st.rerun()
 
-### High Priority — Review Carefully
+    # ── Tab: Review Checklist ─────────────────────────────────────────────────
+    with tab_checklist:
+        st.markdown("#### Exportable Review Checklist")
+        st.caption("Curated questions from High & Medium priority clauses to bring to a lawyer, HR, or landlord.")
 
-**Early Termination Fee (§7.2, Page 4)**
-- [ ] Is there a waiver clause for job loss or medical emergency?
-- [ ] What counts as adequate written notice?
-- [ ] Can I sublet instead of paying the termination fee?
+        high_medium_cards = [c for c in clause_cards if c.get("priority") in ("High", "Medium")]
 
----
+        checklist_lines = [
+            "# ClearClause Review Checklist",
+            f"**Document Type:** {analysis_data.get('document_type', 'Document')}",
+            f"**Parties:** {', '.join(analysis_data.get('parties', [])) or 'N/A'}\n",
+            "## Whole-Document Summary",
+            f"{analysis_data.get('summary', '')}\n",
+            "---",
+            "## High & Medium Priority Review Questions\n",
+        ]
 
-### Medium Priority — Worth Discussing
+        for card in high_medium_cards:
+            checklist_lines.append(
+                f"### {card.get('priority')} — {card.get('title')} ({card.get('section_reference')})"
+            )
+            checklist_lines.append(f"*{card.get('plain_meaning')}*\n")
+            for q in card.get("questions_to_ask", []):
+                checklist_lines.append(f"- [ ] {q}")
+            checklist_lines.append("")
 
-**Automatic Renewal (§3.1, Page 2)**
-- [ ] How do I send written notice — email or certified mail?
-- [ ] Can I opt for month-to-month at renewal instead of another 12 months?
+        checklist_lines.append("---\n*⚠️ Informational review checklist — not legal advice.*")
+        checklist_text = "\n".join(checklist_lines)
 
-**Landlord Entry Rights (§9.1, Page 5)**
-- [ ] Can I refuse entry if the timing is genuinely inconvenient?
+        st.markdown(checklist_text)
+        st.divider()
 
----
-
-*⚠️ This checklist is for informational purposes only — not legal advice.*
-    """.strip()
-
-    st.markdown(checklist_md)
-    st.divider()
-
-    col_dl1, col_dl2, col_dl3 = st.columns(3)
-    with col_dl1:
-        st.download_button(
-            "📥 Download Markdown",
-            data=checklist_md,
-            file_name="clearclause_checklist.md",
-            mime="text/markdown",
-            use_container_width=True,
-            key="dl_md",
-        )
-    with col_dl2:
-        st.download_button(
-            "📥 Download TXT",
-            data=checklist_md.replace("**", "").replace("##", "").replace("- [ ]", "[ ]"),
-            file_name="clearclause_checklist.txt",
-            mime="text/plain",
-            use_container_width=True,
-            key="dl_txt",
-        )
-    with col_dl3:
-        if st.button("📋 Copy to Clipboard", use_container_width=True, key="copy_clipboard"):
-            st.toast("Copied to clipboard! *(wired in Phase 5)*")
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.download_button(
+                "📥 Download Markdown Checklist",
+                data=checklist_text,
+                file_name="clearclause_review_checklist.md",
+                mime="text/markdown",
+                width="stretch",
+                key="dl_md",
+            )
+        with col_dl2:
+            st.download_button(
+                "📥 Download TXT Checklist",
+                data=checklist_text.replace("#", "").replace("- [ ]", "[ ]"),
+                file_name="clearclause_review_checklist.txt",
+                mime="text/plain",
+                width="stretch",
+                key="dl_txt",
+            )
 
 st.divider()
 st.warning(

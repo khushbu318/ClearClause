@@ -9,27 +9,26 @@ Coverage:
 - parse() dispatcher: correct routing + error on unknown type
 """
 
-import math
-import pytest
-from unittest.mock import patch, MagicMock
-
-import sys
 import os
+import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from backend.integrations.document_parser import (
-    parse_text,
-    parse_url,
-    parse_pdf,
-    parse,
-    FetchError,
-    SizeLimitError,
-    ParseFailureError,
-    UnsupportedFormatError,
     MAX_FILE_BYTES,
     MAX_PAGES,
+    FetchError,
+    ParseFailureError,
+    SizeLimitError,
+    UnsupportedFormatError,
+    parse,
+    parse_pdf,
+    parse_text,
+    parse_url,
 )
-
 
 # ── parse_text ────────────────────────────────────────────────────────────────
 

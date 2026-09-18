@@ -4,13 +4,14 @@ Renders branding, how-it-works, feature cards, and CTAs.
 All content is readable dummy/placeholder text for Phase 0.
 """
 
-import sys
 import os
+import sys
 
 # Make backend importable from the repo root
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import streamlit as st
+
 from frontend.ui.theme import GLOBAL_CSS, PRIORITY_COLORS
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -76,7 +77,7 @@ with col_a:
         """,
         unsafe_allow_html=True,
     )
-    if st.button("📄 Understand a Document", use_container_width=True, type="primary"):
+    if st.button("📄 Understand a Document", width="stretch", type="primary"):
         st.switch_page("pages/1_Understand_Document.py")
 
 with col_b:
@@ -93,7 +94,7 @@ with col_b:
         """,
         unsafe_allow_html=True,
     )
-    if st.button("🔍 Compare Two Documents", use_container_width=True):
+    if st.button("🔍 Compare Two Documents", width="stretch"):
         st.switch_page("pages/2_Compare_Documents.py")
 
 st.divider()

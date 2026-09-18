@@ -9,15 +9,15 @@ Coverage:
 - chunk_text: non-empty output, overlap behaviour, empty input
 """
 
+import os
+import sys
+
 import numpy as np
 import pytest
 
-import sys
-import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from backend.integrations.faiss_store import FAISSStore, chunk_text, IndexBuildError
-
+from backend.integrations.faiss_store import FAISSStore, IndexBuildError, chunk_text
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

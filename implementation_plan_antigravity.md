@@ -886,48 +886,48 @@ Streamlit Community Cloud, connected to GitHub repository. Main file: `frontend/
 ## 20. Detailed Task Breakdown
 
 ### Phase 0 — Setup
-- [ ] Init repo, `requirements.txt` (streamlit, pydantic, pymupdf, trafilatura, requests, langgraph, langchain-core, faiss-cpu, sentence-transformers, rank-bm25, pytest, ruff)
-- [ ] `frontend/.streamlit/config.toml` — deep blue/teal theme
-- [ ] Sidebar multipage skeleton: `frontend/Home.py` + both pages with readable dummy placeholder text
-- [ ] `backend/` directory scaffolded with `__init__.py` files
-- [ ] `.gitignore`, `.env.example`
-- [ ] Connect to Streamlit Community Cloud, confirm live deploy
+- [x] Init repo, `requirements.txt` (streamlit, pydantic, pymupdf, trafilatura, requests, langgraph, langchain-core, faiss-cpu, sentence-transformers, rank-bm25, pytest, ruff)
+- [x] `frontend/.streamlit/config.toml` — deep blue/teal theme
+- [x] Sidebar multipage skeleton: `frontend/Home.py` + both pages with readable dummy placeholder text
+- [x] `backend/` directory scaffolded with `__init__.py` files
+- [x] `.gitignore`, `.env.example`
+- [x] Connect to Streamlit Community Cloud, confirm live deploy
 - **Definition of done**: public URL loads all pages without error; dummy text readable
 
 ### Phase 1 — Ingestion + FAISS
-- [ ] `backend/models/graph_state.py` — `AnalysisGraphState`, `QAGraphState`, `ComparisonGraphState`
-- [ ] `backend/models/document.py` — `ParsedDocument`
-- [ ] `backend/integrations/document_parser.py` — `parse_pdf`, `parse_url` (SSRF-guarded), `parse_txt`, unified `parse()`
-- [ ] `backend/integrations/embedding_client.py` — HuggingFace `all-MiniLM-L6-v2` wrapper
-- [ ] `backend/integrations/faiss_store.py` — `build()`, `search()`, `serialize()`, `deserialize()`
-- [ ] `backend/agents/pdf_ingest_agent.py`
-- [ ] `backend/agents/url_ingest_agent.py`
-- [ ] `backend/agents/text_ingest_agent.py`
-- [ ] `backend/agents/input_router.py`
-- [ ] Unit tests for parser, FAISS store, embedding client
+- [x] `backend/models/graph_state.py` — `AnalysisGraphState`, `QAGraphState`, `ComparisonGraphState`
+- [x] `backend/models/document.py` — `ParsedDocument`
+- [x] `backend/integrations/document_parser.py` — `parse_pdf`, `parse_url` (SSRF-guarded), `parse_txt`, unified `parse()`
+- [x] `backend/integrations/embedding_client.py` — HuggingFace `all-MiniLM-L6-v2` wrapper
+- [x] `backend/integrations/faiss_store.py` — `build()`, `search()`, `serialize()`, `deserialize()`
+- [x] `backend/agents/pdf_ingest_agent.py`
+- [x] `backend/agents/url_ingest_agent.py`
+- [x] `backend/agents/text_ingest_agent.py`
+- [x] `backend/agents/input_router.py`
+- [x] Unit tests for parser, FAISS store, embedding client
 - **Definition of done**: all three input types produce a valid graph state with index; all unit tests pass
 
 ### Phase 2 — Analysis Graph
-- [ ] `backend/models/clause.py` — `Clause`, `ClauseCard`
-- [ ] `backend/models/analysis.py` — `DocumentAnalysis`
-- [ ] `backend/prompts/extract_clauses.py` — with prompt-injection delimiters
-- [ ] `backend/prompts/build_card.py` — Clause Card prompt
-- [ ] `backend/prompts/summarize.py`
-- [ ] `backend/integrations/llm_client.py` — OpenRouter wrapper, retry-once logic
-- [ ] `backend/agents/clause_extract_agent.py` — PDF path + URL/text FAISS path
-- [ ] `backend/agents/card_builder_agent.py`
-- [ ] `backend/agents/summary_agent.py`
-- [ ] `backend/graphs/analysis_graph.py` — full LangGraph StateGraph wiring
-- [ ] `backend/services/document_analysis_service.py` — `run_analysis_graph()` entry point
-- [ ] Integration tests: all three input types with mocked LLM
+- [x] `backend/models/clause.py` — `Clause`, `ClauseCard`
+- [x] `backend/models/analysis.py` — `DocumentAnalysis`
+- [x] `backend/prompts/extract_clauses.py` — with prompt-injection delimiters
+- [x] `backend/prompts/build_card.py` — Clause Card prompt
+- [x] `backend/prompts/summarize.py`
+- [x] `backend/integrations/llm_client.py` — OpenRouter wrapper, retry-once logic
+- [x] `backend/agents/clause_extract_agent.py` — PDF path + URL/text FAISS path
+- [x] `backend/agents/card_builder_agent.py`
+- [x] `backend/agents/summary_agent.py`
+- [x] `backend/graphs/analysis_graph.py` — full LangGraph StateGraph wiring
+- [x] `backend/services/document_analysis_service.py` — `run_analysis_graph()` entry point
+- [x] Integration tests: all three input types with mocked LLM
 - **Definition of done**: any input type produces a schema-valid `DocumentAnalysis` with Clause Cards
 
 ### Phase 3 — Clause Card UI
-- [ ] `frontend/ui/clause_card.py` — priority-colored card component
-- [ ] `frontend/ui/processing_status.py` — staged status from graph state
-- [ ] `frontend/ui/theme.py` — color tokens
-- [ ] Wire Summary tab + Clause Cards tab in `frontend/pages/1_Understand_Document.py`
-- [ ] All three input type flows wired through to UI
+- [x] `frontend/ui/clause_card.py` — priority-colored card component
+- [x] `frontend/ui/processing_status.py` — staged status from graph state
+- [x] `frontend/ui/theme.py` — color tokens
+- [x] Wire Summary tab + Clause Cards tab in `frontend/pages/1_Understand_Document.py`
+- [x] All three input type flows wired through to UI
 - **Definition of done**: Clause Cards render correctly with priority colors; staged loading visible
 
 ### Phase 4 — Q&A Graph
